@@ -38,13 +38,13 @@ def cli():
 @click.option(
     "--sprite-width", 
     type=int, 
-    default=64, 
+    default=128, 
     help="Width of the output sprite"
 )
 @click.option(
     "--sprite-height", 
     type=int, 
-    default=64, 
+    default=128, 
     help="Height of the output sprite"
 )
 @click.option(
@@ -82,6 +82,12 @@ def cli():
     help="Random seed for reproducibility (optional)"
 )
 @click.option(
+    "--batch-size",
+    type=int,
+    default=1,
+    help="Number of sprites to generate"
+)
+@click.option(
     "--hf-cache-dir",
     type=str,
     help="Hugging Face cache directory (optional, defaults to HF_HOME environment variable)"
@@ -90,14 +96,15 @@ def generate(
     prompt: str,
     output: str,
     model: str = "sd3.5",
-    sprite_width: int = 64,
-    sprite_height: int = 64,
+    sprite_width: int = 128,
+    sprite_height: int = 128,
     negative_prompt: str = "ugly, blurry, low quality, distorted, deformed",
     gen_width: int = 1024,
     gen_height: int = 1024,
     steps: int = 30,
     guidance_scale: float = 7.5,
     seed: Optional[int] = None,
+    batch_size: int = 1,
     hf_cache_dir: Optional[str] = None,
 ):
     """Generate a sprite using AI image generation."""
@@ -106,8 +113,8 @@ def generate(
         seed = random.randint(0, 2**32 - 1)
         click.echo(f"Using random seed: {seed}")
     
-    # Generate the sprite
-    sprite = generate_sprite(
+    # Generate the sprite(s)
+    sprites = generate_sprite(
         prompt=prompt,
         output_path=output,
         model_name=model,
@@ -118,12 +125,16 @@ def generate(
         num_inference_steps=steps,
         guidance_scale=guidance_scale,
         seed=seed,
-        hf_cache_dir=hf_cache_dir
+        hf_cache_dir=hf_cache_dir,
+        batch_size=batch_size
     )
     
-    click.echo(f"Sprite generation complete! Saved to: {output}")
+    if batch_size > 1:
+        click.echo(f"{batch_size} sprites generated!")
+    else:
+        click.echo(f"Sprite generation complete! Saved to: {output}")
     
-    return sprite
+    return sprites
 
 @cli.command()
 def list_models():

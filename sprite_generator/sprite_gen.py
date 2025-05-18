@@ -13,7 +13,7 @@ from typing import Optional, Tuple, Union, List
 import numpy as np
 from PIL import Image
 import torch
-from diffusers import DiffusionPipeline, StableDiffusionPipeline, StableDiffusionXLPipeline
+from diffusers import DiffusionPipeline, StableDiffusionPipeline, StableDiffusionXLPipeline, AutoPipelineForText2Image
 from rembg import remove
 
 # Set Hugging Face cache directory if specified
@@ -32,7 +32,7 @@ HF_CACHE_DIR = os.environ.get("HF_HOME", None)
 
 # Available models
 AVAILABLE_MODELS = {
-    "sd3.5": "stabilityai/stable-diffusion-3-medium-diffusers",
+    "sd3.5": "stabilityai/stable-diffusion-3.5-medium",
     "sdxl": "stabilityai/stable-diffusion-xl-base-1.0",
     "saana": "segmind/SaanaV2",
 }
@@ -60,6 +60,13 @@ def load_model(model_name: str) -> DiffusionPipeline:
             use_safetensors=True,
             variant="fp16"
         )
+    elif model_name == "sd3.5":
+        # SD3 requires AutoPipelineForText2Image
+        pipeline = AutoPipelineForText2Image.from_pretrained(
+            model_id,
+            torch_dtype=torch.float16,
+            variant="fp16"
+        )
     else:
         pipeline = StableDiffusionPipeline.from_pretrained(
             model_id,
@@ -82,10 +89,11 @@ def generate_image(
     height: int = 512,
     num_inference_steps: int = 30,
     guidance_scale: float = 7.5,
-    seed: Optional[int] = None
-) -> Image.Image:
+    seed: Optional[int] = None,
+    batch_size: int = 1
+) -> Union[Image.Image, List[Image.Image]]:
     """
-    Generate an image using a diffusion model.
+    Generate one or more images using a diffusion model.
     
     Args:
         prompt: Text prompt for image generation
@@ -96,9 +104,11 @@ def generate_image(
         num_inference_steps: Number of denoising steps
         guidance_scale: Scale for classifier-free guidance
         seed: Random seed for reproducibility
+        batch_size: Number of images to generate at once
         
     Returns:
-        Generated PIL Image
+        If batch_size=1: A single PIL Image
+        If batch_size>1: A list of PIL Images
     """
     # Load the model
     pipeline = load_model(model_name)
@@ -108,7 +118,7 @@ def generate_image(
     if seed is not None:
         generator = torch.Generator("cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
     
-    # Generate the image
+    # Generate the image(s)
     result = pipeline(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -116,11 +126,15 @@ def generate_image(
         height=height,
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
-        generator=generator
+        generator=generator,
+        num_images_per_prompt=batch_size
     )
     
-    # Return the first image
-    return result.images[0]
+    # Return the image(s)
+    if batch_size == 1:
+        return result.images[0]
+    else:
+        return result.images
 
 def remove_background(image: Image.Image) -> Image.Image:
     """
@@ -155,7 +169,7 @@ def generate_sprite(
     prompt: str,
     output_path: Optional[str] = None,
     model_name: str = "sd3.5",
-    sprite_size: Tuple[int, int] = (64, 64),
+    sprite_size: Tuple[int, int] = (128, 128),
     negative_prompt: str = "ugly, blurry, low quality, distorted, deformed",
     gen_width: int = 1024,
     gen_height: int = 1024,
@@ -163,9 +177,10 @@ def generate_sprite(
     guidance_scale: float = 7.5,
     seed: Optional[int] = None,
     hf_cache_dir: Optional[str] = None,
-) -> Image.Image:
+    batch_size: int = 1
+) -> Union[Image.Image, List[Image.Image]]:
     """
-    Generate a sprite image using an AI model, remove the background, and resize/pixelize.
+    Generate one or more sprite images using an AI model, remove backgrounds, and resize/pixelize.
     
     Args:
         prompt: Text prompt for image generation
@@ -178,9 +193,11 @@ def generate_sprite(
         num_inference_steps: Number of denoising steps
         guidance_scale: Scale for classifier-free guidance
         seed: Random seed for reproducibility
+        batch_size: Number of sprites to generate
         
     Returns:
-        Generated sprite as a PIL Image
+        If batch_size=1: A single PIL Image of the generated sprite
+        If batch_size>1: A list of PIL Images of the generated sprites
     """
     # Set Hugging Face cache directory if provided
     if hf_cache_dir:
@@ -188,9 +205,9 @@ def generate_sprite(
     elif HF_CACHE_DIR:
         set_hf_cache_dir(HF_CACHE_DIR)
         
-    # Generate the base image
-    print(f"Generating image with {model_name} using prompt: '{prompt}'")
-    image = generate_image(
+    # Generate the base image(s) in a single batch
+    print(f"Generating {batch_size} image(s) with {model_name} using prompt: '{prompt}'")
+    images = generate_image(
         prompt=prompt,
         model_name=model_name,
         negative_prompt=negative_prompt,
@@ -198,23 +215,58 @@ def generate_sprite(
         height=gen_height,
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
-        seed=seed
+        seed=seed,
+        batch_size=batch_size
     )
     
-    # Remove the background
-    print("Removing background...")
-    image_no_bg = remove_background(image)
-    
-    # Resize and pixelize
-    print(f"Resizing to sprite size: {sprite_size}...")
-    sprite = resize_pixelize(image_no_bg, sprite_size)
-    
-    # Save the sprite if an output path is provided
-    if output_path:
-        output_dir = os.path.dirname(output_path)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        sprite.save(output_path, format="PNG")
-        print(f"Sprite saved to: {output_path}")
-    
-    return sprite
+    # Process each image if batch_size > 1
+    if batch_size > 1:
+        sprites = []
+        for i, image in enumerate(images):
+            # Remove the background
+            print(f"Removing background for image {i+1}/{batch_size}...")
+            image_no_bg = remove_background(image)
+            
+            # Resize and pixelize
+            print(f"Resizing image {i+1}/{batch_size} to sprite size: {sprite_size}...")
+            sprite = resize_pixelize(image_no_bg, sprite_size)
+            
+            # Save the sprite if an output path is provided
+            if output_path:
+                # Create a unique filename for each sprite in the batch
+                base_name, ext = os.path.splitext(output_path)
+                # Ensure extension is .png
+                if not ext or ext.lower() != '.png':
+                    ext = '.png'
+                current_output_path = f"{base_name}_{i+1}{ext}"
+                
+                output_dir = os.path.dirname(current_output_path)
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                sprite.save(current_output_path, format="PNG")
+                print(f"Sprite {i+1}/{batch_size} saved to: {current_output_path}")
+            
+            sprites.append(sprite)
+        
+        return sprites
+    else:
+        # Single image processing
+        image = images  # In this case, images is a single image
+        
+        # Remove the background
+        print("Removing background...")
+        image_no_bg = remove_background(image)
+        
+        # Resize and pixelize
+        print(f"Resizing to sprite size: {sprite_size}...")
+        sprite = resize_pixelize(image_no_bg, sprite_size)
+        
+        # Save the sprite if an output path is provided
+        if output_path:
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            sprite.save(output_path, format="PNG")
+            print(f"Sprite saved to: {output_path}")
+        
+        return sprite
